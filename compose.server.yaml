@@ -1,0 +1,6 @@
+# OpenProject is on 192.168.1.12; Caddy/Cloudflare ingress is on another host.
+# Use with compose.yaml after setting BRIDGE_BIND_ADDRESS and BRIDGE_PUBLISHED_PORT.
+services:
+  bridge:
+    dns:
+      - 192.168.1.50

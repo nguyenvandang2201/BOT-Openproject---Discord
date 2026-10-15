@@ -1,0 +1,6 @@
+# For Caddy running directly on the same VPS as Docker.
+# Replace this hostname with PUBLIC_URL's hostname and point its DNS to the VPS.
+discord-bot.example.com {
+    # Do not enable access logs containing OAuth query strings.
+    reverse_proxy 127.0.0.1:8080
+}

@@ -1,0 +1,1 @@
+"""OpenProject to Discord bridge."""

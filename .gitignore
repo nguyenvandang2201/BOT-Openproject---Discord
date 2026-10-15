@@ -1,0 +1,14 @@
+.env
+.venv/
+data/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.pytest-work/
+.ruff_cache/
+.docker-validation/
+*.tar.gz
+*.tmp
+build/
+dist/

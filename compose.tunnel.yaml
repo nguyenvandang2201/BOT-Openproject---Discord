@@ -1,0 +1,14 @@
+# Use only when the existing cloudflared runs in Docker.
+# Join its existing network; this file does not create or modify cloudflared.
+services:
+  bridge:
+    networks:
+      default:
+      tunnel:
+        aliases:
+          - op-discord-bridge
+
+networks:
+  tunnel:
+    external: true
+    name: ${CLOUDFLARE_TUNNEL_NETWORK:?Set the existing cloudflared Docker network name}
