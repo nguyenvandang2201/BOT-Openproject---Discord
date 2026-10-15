@@ -31,7 +31,7 @@ async def test_oauth_http_flow_requires_cookie_and_discord_confirmation(config, 
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as op_http:
-        app = create_app(store, OpenProject(config, op_http))
+        app = create_app(store, OpenProject(config, op_http), allow_oauth=True)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url=config.public_url
         ) as browser:
@@ -68,3 +68,12 @@ async def test_readiness_separate_from_liveness(store, api):
     ) as http:
         assert (await http.get("/healthz")).status_code == 200
         assert (await http.get("/readyz")).status_code == 503
+
+
+async def test_self_link_routes_disabled_by_default(store, api):
+    app = create_app(store, api)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://bot.example"
+    ) as http:
+        assert (await http.get("/link", params={"ticket": "anything"})).status_code == 404
+        assert (await http.get("/oauth/callback", params={"state": "x"})).status_code == 404

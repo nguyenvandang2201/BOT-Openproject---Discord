@@ -4,14 +4,17 @@ import random
 import sqlite3
 import time
 
+import httpx
+
 from .openproject import APIError
 
 log = logging.getLogger(__name__)
 
 
 class DeliveryError(Exception):
-    def __init__(self, code="discord_error"):
+    def __init__(self, code="discord_error", permanent=False):
         self.code = code
+        self.permanent = permanent
 
 
 class Service:
@@ -52,6 +55,8 @@ class Service:
     async def access_token(self, discord_id):
         account = self.store.account(discord_id)
         tokens = self.store.unseal(account["tokens"])
+        if account["credential_kind"] == "api_key":
+            return httpx.BasicAuth("apikey", tokens["api_key"])
         if tokens["expires_at"] <= time.time() + 60:
             tokens = await self.api.refresh(tokens)
             # Persist rotated refresh token before any subsequent network operation.
@@ -84,7 +89,12 @@ class Service:
                         except DeliveryError as error:
                             delay = min(3600, 30 * 2 ** min(job["attempts"], 7))
                             self.store.retry(job, delay)
-                            self.store.account_result(discord_id, error=error.code, delay=delay)
+                            self.store.account_result(
+                                discord_id,
+                                status="needs_attention" if error.permanent else "active",
+                                error=error.code,
+                                delay=delay,
+                            )
                             return  # Stop this user's batch, continue other users.
                         self.store.finish(discord_id, nid, "sent")
                     self.store.account_result(discord_id, delay=self.config.poll_interval)

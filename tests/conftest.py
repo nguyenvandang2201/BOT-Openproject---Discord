@@ -18,6 +18,8 @@ def config(tmp_path):
         discord_token="discord-secret",
         encryption_key=Fernet.generate_key().decode(),
         db_path=str(tmp_path / "db.sqlite3"),
+        guild_id=1,
+        category_id=2,
     )
 
 
@@ -59,3 +61,4 @@ def pending(store, uid="100", op_id=10, expiry=None):
 def activate(store, uid="100", op_id=10, ids=(), expiry=None):
     code = pending(store, uid, op_id, expiry)
     store.activate(uid, code, list(ids))
+    store.assign_channel(uid, "1", str(1000 + int(uid)))

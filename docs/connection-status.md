@@ -1,5 +1,8 @@
 # Trạng thái triển khai — 2026-10-15
 
+> Đây là ảnh chụp trạng thái của phiên bản gửi DM trước khi nâng cấp. Mã private
+> channel hiện trong repository chưa được xác minh hoặc triển khai trên VPS.
+
 Microservice đang chạy trên máy OpenProject `192.168.1.12` trong
 `/opt/op-discord-bridge`, tách khỏi stack OpenProject tại `/opt/openproject-dev`.
 Bot dùng Docker Compose với `compose.yaml` và `compose.server.yaml`, bind

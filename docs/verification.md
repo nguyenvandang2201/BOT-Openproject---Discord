@@ -1,5 +1,8 @@
 # Kết quả kiểm tra MVP — 2026-10-15
 
+> Kết quả dưới đây thuộc phiên bản MVP gửi DM. Bộ kiểm thử private channel hiện
+> có kết quả riêng trong README; chưa kiểm tra phiên bản mới trên Discord/OpenProject thật.
+
 - **32 tests passed** trên Python 3.12.10: HTTP API mock, SQLite thực, luồng HTTP OAuth
   với cookie/state, mã xác nhận gắn Discord ID, hết hạn/replay, unique mapping, baseline,
   phân trang, chặn link khác origin, rate limit, refresh token, retry DM, restart, unlink

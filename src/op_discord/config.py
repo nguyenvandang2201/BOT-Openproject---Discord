@@ -32,6 +32,7 @@ class Config:
     encryption_key: str
     db_path: str = "data/bridge.sqlite3"
     guild_id: int | None = None
+    category_id: int | None = None
     poll_interval: int = 60
     max_pages: int = 100
     delivery_batch: int = 20
@@ -55,13 +56,14 @@ class Config:
         Fernet(key.encode())
         result = cls(
             op_url=origin(required("OPENPROJECT_URL")),
-            public_url=origin(required("PUBLIC_URL")),
-            client_id=required("OPENPROJECT_CLIENT_ID"),
-            client_secret=required("OPENPROJECT_CLIENT_SECRET"),
+            public_url=origin(os.environ["PUBLIC_URL"]) if os.getenv("PUBLIC_URL") else "",
+            client_id=os.getenv("OPENPROJECT_CLIENT_ID", "").strip(),
+            client_secret=os.getenv("OPENPROJECT_CLIENT_SECRET", "").strip(),
             discord_token=required("DISCORD_BOT_TOKEN"),
             encryption_key=key,
             db_path=os.getenv("DATABASE_PATH", "data/bridge.sqlite3"),
-            guild_id=int(os.environ["DISCORD_GUILD_ID"]) if os.getenv("DISCORD_GUILD_ID") else None,
+            guild_id=int(required("DISCORD_GUILD_ID")),
+            category_id=int(required("DISCORD_CATEGORY_ID")),
             poll_interval=int(os.getenv("POLL_INTERVAL_SECONDS", "60")),
             max_pages=int(os.getenv("MAX_NOTIFICATION_PAGES", "100")),
             delivery_batch=int(os.getenv("DELIVERY_BATCH_SIZE", "20")),
@@ -72,6 +74,9 @@ class Config:
             or result.max_pages < 1
             or result.delivery_batch < 1
             or not 1 <= result.port <= 65535
+            or result.guild_id < 1
+            or result.category_id < 1
+            or bool(result.client_id) != bool(result.client_secret)
         ):
             raise ValueError("Invalid polling, page, batch or port configuration")
         return result

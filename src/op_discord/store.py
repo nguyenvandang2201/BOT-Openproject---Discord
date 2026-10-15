@@ -20,6 +20,10 @@ class Store:
         self.cipher = Fernet(key.encode())
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version > 1:
+            self.db.close()
+            raise ValueError("Database was created by a newer bridge version")
         self.db.executescript("""
             PRAGMA foreign_keys=ON;
             PRAGMA journal_mode=WAL;
@@ -27,9 +31,10 @@ class Store:
             CREATE TABLE IF NOT EXISTS accounts (
                 discord_id TEXT PRIMARY KEY, op_id INTEGER NOT NULL UNIQUE,
                 name TEXT NOT NULL, tokens BLOB NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active', error TEXT,
+                status TEXT NOT NULL DEFAULT 'migration_pending', error TEXT,
                 failures INTEGER NOT NULL DEFAULT 0, next_poll REAL NOT NULL DEFAULT 0,
-                last_poll REAL
+                last_poll REAL, credential_kind TEXT NOT NULL DEFAULT 'oauth',
+                guild_id TEXT, channel_id TEXT
             );
             CREATE TABLE IF NOT EXISTS flows (
                 discord_id TEXT PRIMARY KEY, ticket TEXT UNIQUE, state TEXT UNIQUE,
@@ -45,6 +50,21 @@ class Store:
             CREATE INDEX IF NOT EXISTS delivery_due
                 ON deliveries(discord_id, status, next_attempt);
         """)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(accounts)")}
+        with self.db:
+            for name, definition in (
+                ("credential_kind", "TEXT NOT NULL DEFAULT 'oauth'"),
+                ("guild_id", "TEXT"),
+                ("channel_id", "TEXT"),
+            ):
+                if name not in columns:
+                    self.db.execute(f"ALTER TABLE accounts ADD COLUMN {name} {definition}")
+            self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS account_channel ON accounts(channel_id)")
+            self.db.execute(
+                "UPDATE accounts SET status='migration_pending' "
+                "WHERE channel_id IS NULL AND status IN ('active','needs_attention')"
+            )
+            self.db.execute("PRAGMA user_version=1")
 
     def close(self):
         self.db.close()
@@ -124,6 +144,50 @@ class Store:
             )
             self.db.execute("DELETE FROM flows WHERE discord_id=?", (discord_id,))
 
+    def provision_api_key(self, discord_id, op_id, name, api_key, guild_id, channel_id, ids):
+        with self.db:
+            self.db.execute(
+                "INSERT INTO accounts(discord_id,op_id,name,tokens,credential_kind,guild_id,"
+                "channel_id,status) VALUES(?,?,?,?,?,?,?,'active')",
+                (discord_id, op_id, name, self.seal({"api_key": api_key}), "api_key", guild_id, channel_id),
+            )
+            self.db.executemany(
+                "INSERT INTO deliveries VALUES(?,?, 'baseline',0,0)",
+                [(discord_id, nid) for nid in ids],
+            )
+
+    def assign_channel(self, discord_id, guild_id, channel_id):
+        with self.db:
+            result = self.db.execute(
+                "UPDATE accounts SET guild_id=?,channel_id=?,status='active',error=NULL "
+                "WHERE discord_id=? AND status='migration_pending'",
+                (guild_id, channel_id, discord_id),
+            )
+            if result.rowcount != 1:
+                raise ValueError("Account is not awaiting a channel")
+
+    def suspend(self, discord_id, error="suspended_by_admin"):
+        with self.db:
+            result = self.db.execute(
+                "UPDATE accounts SET status='needs_attention',error=? WHERE discord_id=?",
+                (error, discord_id),
+            )
+            if result.rowcount != 1:
+                raise ValueError("Account not found")
+
+    def resume(self, discord_id):
+        with self.db:
+            result = self.db.execute(
+                "UPDATE accounts SET status='active',error=NULL,failures=0,next_poll=0 "
+                "WHERE discord_id=? AND channel_id IS NOT NULL",
+                (discord_id,),
+            )
+            if result.rowcount != 1:
+                raise ValueError("Account has no channel")
+
+    def list_accounts(self):
+        return [dict(row) for row in self.db.execute("SELECT * FROM accounts ORDER BY discord_id")]
+
     def account(self, discord_id):
         row = self.db.execute("SELECT * FROM accounts WHERE discord_id=?", (discord_id,)).fetchone()
         return dict(row) if row else None
@@ -132,7 +196,8 @@ class Store:
         return [
             dict(r)
             for r in self.db.execute(
-                "SELECT * FROM accounts WHERE status='active' AND next_poll<=?", (time.time(),)
+                "SELECT * FROM accounts WHERE status='active' AND channel_id IS NOT NULL "
+                "AND next_poll<=?", (time.time(),)
             )
         ]
 

@@ -18,7 +18,7 @@ def page(text, status=200):
     )
 
 
-def create_app(store, api, ready=lambda: True):
+def create_app(store, api, ready=lambda: True, *, allow_oauth=False):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
@@ -49,6 +49,8 @@ def create_app(store, api, ready=lambda: True):
 
     @app.get("/link")
     async def link(ticket: str = ""):
+        if not allow_oauth:
+            return page("Liên kết do quản lý thực hiện.", 404)
         if len(ticket) > 128:
             return page("Liên kết không hợp lệ.", 400)
         flow = store.begin_oauth(ticket)
@@ -63,6 +65,8 @@ def create_app(store, api, ready=lambda: True):
 
     @app.get("/oauth/callback")
     async def callback(request: Request, state: str = "", code: str = "", error: str = ""):
+        if not allow_oauth:
+            return page("Liên kết do quản lý thực hiện.", 404)
         if len(state) > 128 or len(code) > 4096:
             return page("Phiên xác thực không hợp lệ.", 400)
         flow = store.consume_state(state, request.cookies.get(COOKIE, ""))

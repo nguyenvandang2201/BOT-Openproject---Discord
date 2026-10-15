@@ -1,5 +1,8 @@
 # Kiến trúc và kế hoạch triển khai
 
+> Tài liệu này mô tả kiến trúc MVP gửi DM trước đây. Thiết kế private channel và
+> quy trình triển khai mới nằm ở [private-channel-plan.md](private-channel-plan.md).
+
 Microservice chạy độc lập, không sửa source, plugin hoặc database OpenProject.
 MVP dành cho một instance OpenProject tại `https://openproject.lazy247.space` và một bot Discord.
 

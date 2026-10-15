@@ -66,13 +66,15 @@ class OpenProject:
         if time.time() < self.blocked_until:
             raise APIError(429, self.blocked_until - time.time())
         headers = {"Accept": "application/hal+json, application/json"}
-        if token:
+        auth = token if isinstance(token, httpx.BasicAuth) else None
+        if token and auth is None:
             headers["Authorization"] = "Bearer " + token
         try:
             response = await self.http.request(
                 method,
                 self.safe_url(href),
                 headers=headers,
+                auth=auth,
                 data=data,
                 follow_redirects=False,
                 timeout=20,

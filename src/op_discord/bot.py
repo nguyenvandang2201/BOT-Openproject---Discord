@@ -1,10 +1,9 @@
-import asyncio
 import logging
-from urllib.parse import urlencode
 
 import discord
 from discord import app_commands
 
+from .channel_policy import channel_is_private
 from .openproject import ProtocolError
 from .service import DeliveryError
 
@@ -42,89 +41,42 @@ def notification_embed(notification, api):
 
 class BridgeBot(discord.Client):
     def __init__(self, config, store, api):
+        intents = discord.Intents.none()
+        intents.guilds = True
         super().__init__(
-            intents=discord.Intents.none(), allowed_mentions=discord.AllowedMentions.none()
+            intents=intents, allowed_mentions=discord.AllowedMentions.none()
         )
         self.config, self.store, self.api = config, store, api
         self.service = None
         self.tree = app_commands.CommandTree(self)
-        group = app_commands.Group(name="op", description="Liên kết và nhận thông báo OpenProject")
-        self.tree.add_command(group)
+        group = app_commands.Group(name="op", description="Trạng thái thông báo OpenProject")
+        self.tree.add_command(group, guild=discord.Object(id=config.guild_id))
 
-        @group.command(name="link", description="Liên kết tài khoản OpenProject bằng OAuth")
-        @app_commands.checks.cooldown(1, 15, key=lambda i: i.user.id)
-        async def link(interaction: discord.Interaction):
-            uid = str(interaction.user.id)
-            if self.store.account(uid):
-                await interaction.response.send_message(
-                    "Bạn đã liên kết. Dùng /op status hoặc /op unlink trước khi liên kết lại.",
-                    ephemeral=True,
-                )
-                return
-            ticket = self.store.start_flow(uid)
-            view = discord.ui.View()
-            view.add_item(
-                discord.ui.Button(
-                    label="Liên kết OpenProject",
-                    url=(self.config.public_url + "/link?" + urlencode({"ticket": ticket})),
-                )
-            )
-            await interaction.response.send_message(
-                "Mở liên kết riêng này trong 10 phút, cấp quyền rồi xác nhận lại trong Discord. "
-                "Bot sẽ gửi tiêu đề thông báo cá nhân qua DM; hãy bật nhận DM từ bot.",
-                view=view,
-                ephemeral=True,
-            )
-
-        @group.command(
-            name="confirm", description="Xác nhận tài khoản vừa đăng nhập trên trình duyệt"
-        )
-        @app_commands.checks.cooldown(3, 60, key=lambda i: i.user.id)
-        async def confirm(interaction: discord.Interaction, code: str):
-            await interaction.response.defer(ephemeral=True)
-            try:
-                async with asyncio.timeout(120):
-                    name = await self.service.confirm(str(interaction.user.id), code.strip())
-                message = (
-                    f"Đã liên kết với {safe_text(name, 200)}. Sẽ gửi các thông báo mới qua DM."
-                )
-            except ValueError as exc:
-                message = str(exc)
-            except Exception as exc:
-                log.warning("confirm_failed kind=%s", type(exc).__name__)
-                message = "Chưa liên kết được. Kiểm tra API/quyền truy cập rồi chạy /op link lại."
-            await interaction.followup.send(message, ephemeral=True)
-
-        @group.command(name="status", description="Xem trạng thái liên kết và hàng đợi DM")
+        @group.command(name="status", description="Xem trạng thái liên kết và hàng đợi thông báo")
         async def status(interaction: discord.Interaction):
+            if interaction.guild_id != self.config.guild_id:
+                await interaction.response.send_message("Lệnh chỉ dùng trong server đã cấu hình.", ephemeral=True)
+                return
             uid = str(interaction.user.id)
             account = self.store.account(uid)
             if not account:
-                message = "Chưa liên kết. Dùng /op link để bắt đầu."
+                message = "Chưa được quản lý liên kết OpenProject."
             else:
+                destination = (
+                    f"<#{account['channel_id']}>" if account["channel_id"] else "chưa được gán"
+                )
                 message = (
                     f"OpenProject: {safe_text(account['name'], 200)} (ID {account['op_id']})\n"
                     f"Trạng thái: {account['status']}\n"
+                    f"Channel: {destination}\n"
                     f"Đang chờ gửi: {self.store.pending_count(uid)}\n"
                     f"Lỗi gần nhất: {account['error'] or 'không có'}"
                 )
                 if account["last_poll"]:
                     message += f"\nLần lấy thông báo thành công: <t:{int(account['last_poll'])}:R>"
                 if account["status"] == "needs_attention":
-                    message += "\nKiểm tra quyền/API, sau đó /op unlink và /op link lại."
-                if account["error"] == "discord_dm_blocked":
-                    message += "\nHãy bật DM từ bot. Bot sẽ tự thử lại."
+                    message += "\nLiên hệ quản lý để kiểm tra tài khoản và channel."
             await interaction.response.send_message(message, ephemeral=True)
-
-        @group.command(name="unlink", description="Dừng nhận DM, xóa token và liên kết trong bot")
-        async def unlink(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            await self.service.unlink(str(interaction.user.id))
-            await interaction.followup.send(
-                "Đã xóa liên kết, token và hàng đợi trong bot. "
-                "Bạn có thể thu hồi quyền ứng dụng ở phần token OAuth trong OpenProject.",
-                ephemeral=True,
-            )
 
         @self.tree.error
         async def command_error(interaction, error):
@@ -138,21 +90,58 @@ class BridgeBot(discord.Client):
                 await interaction.response.send_message(message, ephemeral=True)
 
     async def setup_hook(self):
-        if self.config.guild_id:
-            guild = discord.Object(id=self.config.guild_id)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
+        self.tree.clear_commands(guild=None)
+        await self.tree.sync()
+        await self.tree.sync(guild=discord.Object(id=self.config.guild_id))
 
     async def send_notification(self, discord_id, notification):
+        account = self.store.account(discord_id)
+        if not account or not account["channel_id"]:
+            raise DeliveryError("channel_missing", permanent=True)
+        guild = self.get_guild(self.config.guild_id)
+        if guild is None:
+            raise DeliveryError("guild_unavailable")
         try:
-            user = await self.fetch_user(int(discord_id))
-            await user.send(
+            await guild.fetch_member(int(discord_id))
+        except discord.NotFound:
+            raise DeliveryError("member_absent", permanent=True) from None
+        except discord.HTTPException:
+            raise DeliveryError() from None
+        try:
+            channel = await self.fetch_channel(int(account["channel_id"]))
+        except discord.NotFound:
+            raise DeliveryError("channel_missing", permanent=True) from None
+        except discord.HTTPException:
+            raise DeliveryError() from None
+        if not isinstance(channel, discord.TextChannel):
+            raise DeliveryError("channel_permissions_changed", permanent=True)
+        overwrites = []
+        for target, permissions in channel.overwrites.items():
+            allow, deny = permissions.pair()
+            overwrites.append(
+                {
+                    "id": str(target.id),
+                    "type": 0 if isinstance(target, discord.Role) else 1,
+                    "allow": str(allow.value),
+                    "deny": str(deny.value),
+                }
+            )
+        details = {
+            "type": 0,
+            "guild_id": channel.guild.id,
+            "parent_id": channel.category_id,
+            "permission_overwrites": overwrites,
+        }
+        if not channel_is_private(
+            details, self.config.guild_id, self.config.category_id, int(discord_id), self.user.id
+        ):
+            raise DeliveryError("channel_permissions_changed", permanent=True)
+        try:
+            await channel.send(
                 embed=notification_embed(notification, self.api),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except discord.Forbidden:
-            raise DeliveryError("discord_dm_blocked") from None
+            raise DeliveryError("channel_permissions_changed", permanent=True) from None
         except (discord.HTTPException, OSError):
             raise DeliveryError() from None

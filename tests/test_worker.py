@@ -49,13 +49,13 @@ async def test_personal_isolation(config, store, api):
     ]
 
 
-async def test_blocked_dm_retries_durably(config, store, api):
+async def test_channel_send_retries_durably(config, store, api):
     activate(store)
     api.notifications.return_value = [1, 2]
-    send = AsyncMock(side_effect=DeliveryError("discord_dm_blocked"))
+    send = AsyncMock(side_effect=DeliveryError("discord_send_failed"))
     await Service(config, store, api, send).poll_account("100")
     assert store.pending_count("100") == 2
-    assert store.account("100")["error"] == "discord_dm_blocked"
+    assert store.account("100")["error"] == "discord_send_failed"
     assert send.await_count == 1
     reopened = Store(config.db_path, config.encryption_key)
     try:
