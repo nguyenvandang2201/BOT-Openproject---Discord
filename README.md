@@ -12,6 +12,8 @@ Bot nhận webhook OpenProject và gửi DM cho người được giao công vi�
 
 Bot bỏ qua bình luận nội bộ. Một webhook cập nhật có thể tạo cả thông báo giao việc lẫn đổi trạng thái. `/op status` trong Discord server trả lời riêng trạng thái liên kết và số DM đang chờ. DM được gửi từ bot vào hộp thư Discord; không tạo channel cho mỗi người. DM dùng thẻ thông tin có tiêu đề, trạng thái, ưu tiên, hạn, dự án, người được giao, người báo cáo và nút mở công việc. Thuộc tính nào OpenProject không cung cấp sẽ hiện dấu gạch ngang. Khi quản lý liên kết người dùng mới, bot gửi một DM chào mừng.
 
+OpenProject chỉ phát webhook công việc sau khi hết thời gian **gộp hoạt động**. Mặc định thời gian này là 5 phút; có thể chỉnh tại **Administration → Emails and notifications → Aggregation**. Trên server hiện tại đặt 1 phút để thông báo đến nhanh hơn. Thiết lập này cũng thay đổi cách OpenProject gộp email và thông báo trong ứng dụng; các job đã hẹn trước khi đổi thiết lập vẫn theo thời điểm cũ.
+
 OpenProject gửi ảnh chụp công việc ở thời điểm xử lý webhook, không gửi danh sách thuộc tính vừa thay đổi. Vì vậy lần cập nhật đầu tiên của **công việc cũ chưa có snapshot** chỉ lưu trạng thái làm mốc, không suy đoán sai rằng vừa có giao việc/đổi trạng thái. Các lần sau được so sánh với mốc. Công việc mới có thể gửi giao việc ngay. Bình luận dùng thông tin công việc nhúng trong chính webhook.
 
 ## Cấu hình
