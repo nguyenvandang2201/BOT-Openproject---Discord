@@ -1,124 +1,67 @@
-# OpenProject → private Discord channels
+# OpenProject → Discord DM
 
-Microservice Python chuyển in-app notification của từng tài khoản OpenProject vào
-**text channel riêng của người đó trong một Discord server**. Bot không gửi DM.
-Người dùng thường chỉ thấy channel của mình; chủ server và thành viên có quyền
-`Administrator` vẫn xem được mọi channel. Bot không sửa source hoặc database của
-OpenProject.
+Bot nhận webhook OpenProject và gửi DM cho người được giao công việc. Người tham gia chỉ cần có mặt trong Discord server; quản lý ghép **OpenProject user ID ↔ Discord user ID** một lần. Không cần token hay thao tác liên kết từ người tham gia.
 
-**Trạng thái:** mã nâng cấp và test offline đã có trong repository. Phiên bản
-private channel chưa được triển khai hoặc xác minh với Discord/OpenProject thật.
-[Trạng thái VPS trước nâng cấp](docs/connection-status.md) là ảnh chụp của bản gửi DM cũ.
+## Thông báo
 
-## Luồng hoạt động
+| Sự kiện OpenProject | Người nhận | Nội dung |
+|---|---|---|
+| Tạo công việc có người được giao, hoặc đổi người được giao | Người được giao mới | Tên công việc, dự án, người thực hiện và liên kết |
+| Đổi trạng thái công việc | Người đang được giao | Trạng thái mới và liên kết |
+| Bình luận công khai mới | Người đang được giao | Tối đa 300 ký tự đầu và liên kết |
 
-1. Quản lý chạy công cụ `op-discord-admin` trên máy chủ, cung cấp Discord ID và
-   personal API token của đúng tài khoản OpenProject tương ứng qua prompt ẩn.
-2. Công cụ kiểm tra người đó thuộc server, xác thực token bằng `/api/v3/users/me`,
-   lấy ID notification hiện tại làm baseline, tạo private channel với quyền riêng,
-   rồi lưu liên kết cùng token đã mã hóa trong SQLite.
-3. Worker quét notification mới theo từng tài khoản, kiểm tra lại quyền đọc bằng
-   credential của tài khoản đó, kiểm tra quyền channel trước khi gửi và đăng embed
-   vào channel đã lưu. ID đã gửi được ghi vào SQLite để không gửi lại sau restart.
-4. `/op status` là lệnh duy nhất dành cho người dùng, chỉ hiện trong server đã cấu
-   hình và trả lời riêng cho người gọi. Liên kết/gỡ liên kết do quản lý thao tác.
+Bot bỏ qua bình luận nội bộ. Một webhook cập nhật có thể tạo cả thông báo giao việc lẫn đổi trạng thái. `/op status` trong Discord server trả lời riêng trạng thái liên kết và số DM đang chờ. DM được gửi từ bot vào hộp thư Discord; không tạo channel cho mỗi người.
 
-Bot chỉ chuyển **notification có ID mới**. Không chuyển mọi lần chỉnh sửa task hay
-mọi email, và không đánh dấu notification đã đọc trên OpenProject. Nếu tiến trình
-dừng ngay sau khi Discord nhận tin nhưng trước khi SQLite ghi `sent`, một tin có thể
-bị gửi lặp.
+OpenProject gửi ảnh chụp công việc ở thời điểm xử lý webhook, không gửi danh sách thuộc tính vừa thay đổi. Vì vậy lần cập nhật đầu tiên của **công việc cũ chưa có snapshot** chỉ lưu trạng thái làm mốc, không suy đoán sai rằng vừa có giao việc/đổi trạng thái. Các lần sau được so sánh với mốc. Công việc mới có thể gửi giao việc ngay. Bình luận dùng thông tin công việc nhúng trong chính webhook.
 
-## Chuẩn bị Discord và OpenProject
+## Cấu hình
 
-- Tạo một **category** trong server, ví dụ `OPENPROJECT`, và lấy ID cho
-  `DISCORD_CATEGORY_ID`. Đặt `DISCORD_GUILD_ID` là ID của server.
-- Bot cần `Manage Channels`, `Manage Roles` (để gỡ quyền khi unlink),
-  `View Channel`, `Send Messages`, `Read Message History` và `Embed Links`.
-  Không cấp `Administrator` cho bot. Bot tạo từng channel với
-  `@everyone` bị từ chối xem, chỉ người nhận và bot được cấp quyền trực tiếp.
-- Quản lý cần personal API token **riêng của từng tài khoản OpenProject** theo cách
-  được chủ tài khoản cho phép. Discord ID và OpenProject ID không đủ để đọc
-  notification cá nhân. Không nhập token vào Discord, URL hoặc tham số dòng lệnh.
-- Mã và token OAuth của tài khoản đã liên kết ở bản cũ được giữ cho migration. Nếu
-  còn dùng tài khoản OAuth cũ, giữ `OPENPROJECT_CLIENT_ID` và
-  `OPENPROJECT_CLIENT_SECRET` để refresh token. Luồng tạo liên kết OAuth mới qua
-  `/link` và `/oauth/callback` đã tắt.
+Sao chép `.env.example` thành `.env`, giữ khóa `TOKEN_ENCRYPTION_KEY` cũ nếu dùng database hiện hữu, rồi đặt:
 
-Quyền `Administrator` của Discord vượt qua permission overwrites. Category chứa
-tối đa 50 channel; với hơn 50 người cần thêm category và mở rộng cấu hình.
-
-## Cấu hình và chạy
-
-Python 3.12 hoặc Docker Compose v2. Sao chép `.env.example` thành `.env`, điền
-`OPENPROJECT_URL`, `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`,
-`DISCORD_CATEGORY_ID` và `TOKEN_ENCRYPTION_KEY`. Giữ khóa Fernet cũ nếu dùng DB
-đã có; thay khóa sẽ làm các token đã lưu không giải mã được. Tạo khóa mới cho DB
-mới bằng:
-
-```powershell
-py -3.12 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```dotenv
+OPENPROJECT_URL=https://openproject.example.com
+DISCORD_BOT_TOKEN=...
+DISCORD_GUILD_ID=...
+DELIVERY_MODE=webhook_dm
+OPENPROJECT_WEBHOOK_SECRET=... # ít nhất 32 ký tự ngẫu nhiên
+BRIDGE_BIND_ADDRESS=192.168.1.12
+BRIDGE_PUBLISHED_PORT=8081
 ```
 
-Trên VPS đã dùng `compose.server.yaml`, chạy bản mới sau khi sao lưu volume DB và
-khóa Fernet:
+`DISCORD_CATEGORY_ID` không cần cho DM. Secret webhook phải giống hệt secret cấu hình trong OpenProject. Tạo secret bằng `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Giữ kín `.env`; không đưa secret vào URL hoặc Git.
+
+Trong **OpenProject → Administration → API and webhooks → + Webhook**, đặt Payload URL là `http://192.168.1.12:8081/webhooks/openproject`, nhập cùng Signature secret, bật webhook, chọn các sự kiện **Work package created**, **Work package updated**, **Work package comment** (bình luận công khai), và chọn dự án cần áp dụng. Nếu OpenProject chặn đích mạng nội bộ, thêm IP bridge vào cấu hình `OPENPROJECT_SSRF__PROTECTION__IP__ALLOWLIST` của dịch vụ OpenProject gửi webhook rồi khởi động lại dịch vụ đó. Có thể dùng một URL HTTPS nội bộ thay cho HTTP LAN nếu hạ tầng đã có sẵn.
+
+OpenProject ký body bằng header `X-OP-Signature: sha1=...`; bridge kiểm tra chữ ký trước khi phân tích nội dung, giới hạn body 1 MiB và trả `202` sau khi lưu hàng đợi SQLite. Chỉ chạy **một** replica bridge với một volume SQLite.
+
+## Chạy bằng Docker Compose
 
 ```bash
 docker compose -f compose.yaml -f compose.server.yaml build
 docker compose -f compose.yaml -f compose.server.yaml up -d
 docker compose -f compose.yaml -f compose.server.yaml ps
+curl -f http://127.0.0.1:8081/readyz
 ```
 
-`/healthz` kiểm tra HTTP còn chạy; `/readyz` chỉ trả 200 khi Discord và worker
-sẵn sàng. Mặc định bot poll mỗi 60 giây mỗi tài khoản, tối đa 20 notification mỗi
-lượt; các tham số nằm trong `.env.example`. Chỉ chạy một replica với một volume
-SQLite. Không dùng `docker compose down -v` nếu cần giữ liên kết và hàng đợi.
+Trên VPS đang dùng `192.168.1.12:8081`, thay địa chỉ `curl` cho đúng listener. `/healthz` kiểm tra HTTP, `/readyz` chỉ thành công khi bot Discord và worker sẵn sàng. `DELIVERY_MODE=webhook_dm` tắt hẳn worker polling/channel cũ. Không dùng `docker compose down -v` vì sẽ xóa database.
 
 ## Quản lý liên kết
 
-`op-discord-admin` là công cụ ngoại tuyến: **dừng bridge trước mỗi thao tác** rồi
-chạy công cụ với cùng `.env` và volume dữ liệu. Ví dụ trên VPS:
+Các lệnh `op-discord-admin` dùng cùng `.env` và volume database. Dừng bridge trước khi chạy vì CLI dùng khóa độc quyền:
 
 ```bash
 docker compose -f compose.yaml -f compose.server.yaml stop bridge
-docker compose -f compose.yaml -f compose.server.yaml run --rm --no-deps bridge op-discord-admin link --discord-id 123456789012345678
+docker compose -f compose.yaml -f compose.server.yaml run --rm --no-deps bridge op-discord-admin dm-link --op-id 12 --discord-id 123456789012345678 --name "Tên người dùng"
+docker compose -f compose.yaml -f compose.server.yaml run --rm --no-deps bridge op-discord-admin dm-list
 docker compose -f compose.yaml -f compose.server.yaml up -d bridge
 ```
 
-Lệnh `link` hỏi OpenProject API token qua prompt ẩn. Nó kiểm tra account và
-baseline trước khi tạo channel. Nếu tạo channel thành công nhưng DB không ghi
-được, công cụ in channel ID để quản lý kiểm tra và dọn thủ công; không tự gán
-channel đó cho tài khoản khác.
+`dm-link` kiểm tra Discord ID thuộc server. Các lệnh còn lại: `dm-suspend --op-id ID`, `dm-resume --op-id ID`, `dm-unlink --op-id ID`, `dm-errors`, `dm-retry --op-id ID`. Liên kết đang hoạt động từ bản channel cũ được nhập tự động **một lần** khi database nâng lên phiên bản mới. Nên chạy `dm-list` sau nâng cấp. Nếu người dùng chặn DM từ bot hoặc rời server, công việc gửi tương ứng được đánh dấu lỗi; sau khi xử lý nguyên nhân, quản lý dùng `dm-retry` để gửi lại.
 
-Các lệnh khác, đều chạy khi bridge đã dừng:
+## Kiểm tra và giới hạn
 
-| Lệnh | Tác dụng |
-|---|---|
-| `list` | Liệt kê liên kết, trạng thái, channel và số notification chờ; không in token. |
-| `migrate --discord-id ID` | Tạo channel và kích hoạt tài khoản OAuth cũ đang `migration_pending`. |
-| `audit-channels` | Kiểm tra thành viên còn trong server và quyền của mọi channel đã gán. |
-| `suspend --discord-id ID` | Tạm dừng tài khoản, giữ token và hàng đợi. |
-| `resume --discord-id ID` | Kiểm tra lại thành viên/channel rồi kích hoạt. |
-| `unlink --discord-id ID` | Gỡ quyền xem channel của người dùng, xóa liên kết/token/queue; giữ channel và lịch sử. |
+Chỉ định tuyến theo OpenProject **user ID**, không theo tên. Bot kiểm tra thành viên vẫn ở Discord server trước mỗi DM. Hàng đợi lưu loại sự kiện, tiêu đề, dự án và tối đa 300 ký tự bình luận; không lưu toàn bộ body webhook. Cùng một sự kiện được nhận lại sẽ không thêm công việc gửi trùng. Nếu Discord đã nhận DM nhưng tiến trình dừng trước khi SQLite ghi `sent`, một DM có thể được gửi lại sau khi khởi động.
 
-Khi nâng cấp DB cũ, các account đang `active` nhưng chưa có `channel_id` sẽ thành
-`migration_pending`. Worker mới không gửi notification cho chúng và **không quay
-lại DM**. Quản lý dùng `migrate` cho từng người; ledger và các job đang chờ được
-giữ. Nếu channel bị xóa, quyền xem bị mở rộng hoặc người dùng rời server, bot
-giữ job và chuyển tài khoản sang `needs_attention`, không gửi sang nơi khác.
+Với công việc cũ, nhập snapshot hiện tại từ OpenProject trước khi bật webhook để nhận ngay lần thay đổi đầu tiên. Trên máy chủ cùng Docker với OpenProject, khi bridge đã dừng, có thể xuất `id,assigned_to_id,status_id,lock_version` từ bảng `work_packages` bằng PostgreSQL rồi truyền CSV không header qua stdin vào `op-discord-admin dm-seed` (dùng `docker compose run -T`). Lệnh chỉ thêm công việc chưa có snapshot, không ghi đè mốc mới hơn. Nếu không nhập, lần cập nhật đầu tiên của mỗi công việc cũ sẽ tạo mốc như mô tả trên. Không gửi DM thử đến người dùng khi chạy test tự động.
 
-## Phát triển và kiểm thử
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python -m pip install -e '.[dev]'
-.\.venv\Scripts\python -m pytest -q
-.\.venv\Scripts\python -m ruff check src tests
-```
-
-Test dùng HTTP mock, SQLite thật và không gửi tin ra Discord. Hãy kiểm tra thực
-với hai tài khoản Discord/OpenProject trước khi dùng production: mỗi người chỉ
-thấy channel của mình, notification mới đến đúng channel, không có DM, restart
-không gửi lại tin cũ, và bot dừng khi quyền channel bị sửa.
-
-[Kế hoạch và điều kiện nghiệm thu chi tiết](docs/private-channel-plan.md) ·
-[Hợp đồng API OpenProject](docs/api-contract.md).
+Mã channel/polling cũ vẫn có thể dùng bằng `DELIVERY_MODE=channel`; trong chế độ đó cần `DISCORD_CATEGORY_ID` và luồng quản lý channel/token cũ. Chế độ DM không dùng personal API token của người tham gia.

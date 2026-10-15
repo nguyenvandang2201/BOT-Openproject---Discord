@@ -58,6 +58,18 @@ class BridgeBot(discord.Client):
                 await interaction.response.send_message("Lệnh chỉ dùng trong server đã cấu hình.", ephemeral=True)
                 return
             uid = str(interaction.user.id)
+            if self.config.delivery_mode == "webhook_dm":
+                link = self.store.dm_link_for_discord(uid)
+                if link:
+                    message = (
+                        f"OpenProject ID: {link['op_id']}\n"
+                        f"Thông báo DM: {'đang bật' if link['enabled'] else 'đã tạm dừng'}\n"
+                        f"Đang chờ gửi: {self.store.dm_pending_count(uid)}"
+                    )
+                else:
+                    message = "Chưa được quản lý liên kết OpenProject."
+                await interaction.response.send_message(message, ephemeral=True)
+                return
             account = self.store.account(uid)
             if not account:
                 message = "Chưa được quản lý liên kết OpenProject."
@@ -143,5 +155,41 @@ class BridgeBot(discord.Client):
             )
         except discord.Forbidden:
             raise DeliveryError("channel_permissions_changed", permanent=True) from None
+        except (discord.HTTPException, OSError):
+            raise DeliveryError() from None
+
+    async def send_dm(self, job):
+        guild = self.get_guild(self.config.guild_id)
+        if guild is None:
+            raise DeliveryError("guild_unavailable")
+        try:
+            member = await guild.fetch_member(int(job["discord_id"]))
+        except discord.NotFound:
+            raise DeliveryError("member_absent", permanent=True) from None
+        except discord.HTTPException:
+            raise DeliveryError() from None
+        labels = {
+            "assignment": "Bạn được giao công việc",
+            "status": "Công việc đổi trạng thái",
+            "comment": "Công việc có bình luận mới",
+        }
+        embed = discord.Embed(
+            title=safe_text(job["subject"], 256),
+            url=f"{self.config.op_url}/work_packages/{job['work_package_id']}",
+            description=labels[job["kind"]],
+            color=0x0077B6,
+        )
+        embed.add_field(name="Dự án", value=safe_text(job["project"], 120), inline=True)
+        if job["kind"] == "status":
+            embed.add_field(name="Trạng thái mới", value=safe_text(job["detail"], 100))
+        elif job["kind"] == "comment":
+            embed.add_field(name="Bình luận", value=safe_text(job["detail"], 500), inline=False)
+        if job["actor"]:
+            embed.add_field(name="Người thực hiện", value=safe_text(job["actor"], 100))
+        embed.set_footer(text=f"OpenProject • Công việc #{job['work_package_id']}")
+        try:
+            await member.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except discord.Forbidden:
+            raise DeliveryError("dm_forbidden", permanent=True) from None
         except (discord.HTTPException, OSError):
             raise DeliveryError() from None

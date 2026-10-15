@@ -37,6 +37,8 @@ class Config:
     max_pages: int = 100
     delivery_batch: int = 20
     port: int = 8080
+    delivery_mode: str = "channel"
+    webhook_secret: str = ""
 
     @property
     def redirect_uri(self) -> str:
@@ -54,6 +56,7 @@ class Config:
 
         key = required("TOKEN_ENCRYPTION_KEY")
         Fernet(key.encode())
+        mode = os.getenv("DELIVERY_MODE", "channel").strip()
         result = cls(
             op_url=origin(required("OPENPROJECT_URL")),
             public_url=origin(os.environ["PUBLIC_URL"]) if os.getenv("PUBLIC_URL") else "",
@@ -63,11 +66,16 @@ class Config:
             encryption_key=key,
             db_path=os.getenv("DATABASE_PATH", "data/bridge.sqlite3"),
             guild_id=int(required("DISCORD_GUILD_ID")),
-            category_id=int(required("DISCORD_CATEGORY_ID")),
+            category_id=(
+                int(required("DISCORD_CATEGORY_ID")) if mode == "channel"
+                else int(os.getenv("DISCORD_CATEGORY_ID", "0") or "0") or None
+            ),
             poll_interval=int(os.getenv("POLL_INTERVAL_SECONDS", "60")),
             max_pages=int(os.getenv("MAX_NOTIFICATION_PAGES", "100")),
             delivery_batch=int(os.getenv("DELIVERY_BATCH_SIZE", "20")),
             port=int(os.getenv("HTTP_PORT", "8080")),
+            delivery_mode=mode,
+            webhook_secret=os.getenv("OPENPROJECT_WEBHOOK_SECRET", "").strip(),
         )
         if (
             result.poll_interval < 15
@@ -75,7 +83,9 @@ class Config:
             or result.delivery_batch < 1
             or not 1 <= result.port <= 65535
             or result.guild_id < 1
-            or result.category_id < 1
+            or (result.delivery_mode == "channel" and result.category_id < 1)
+            or result.delivery_mode not in ("channel", "webhook_dm")
+            or (result.delivery_mode == "webhook_dm" and len(result.webhook_secret) < 32)
             or bool(result.client_id) != bool(result.client_secret)
         ):
             raise ValueError("Invalid polling, page, batch or port configuration")

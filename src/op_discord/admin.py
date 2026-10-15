@@ -2,8 +2,10 @@
 
 import argparse
 import asyncio
+import csv
 import getpass
 import sqlite3
+import sys
 from pathlib import Path
 
 import httpx
@@ -91,6 +93,16 @@ def parser():
     commands = result.add_subparsers(dest="action", required=True)
     commands.add_parser("list")
     commands.add_parser("audit-channels")
+    commands.add_parser("dm-list")
+    commands.add_parser("dm-errors")
+    commands.add_parser("dm-seed")
+    dm_link = commands.add_parser("dm-link")
+    dm_link.add_argument("--op-id", required=True, type=user_id)
+    dm_link.add_argument("--discord-id", required=True, type=user_id)
+    dm_link.add_argument("--name", default="")
+    for action in ("dm-unlink", "dm-suspend", "dm-resume", "dm-retry"):
+        item = commands.add_parser(action)
+        item.add_argument("--op-id", required=True, type=user_id)
     for action in ("link", "migrate", "suspend", "resume", "unlink"):
         item = commands.add_parser(action)
         item.add_argument("--discord-id", required=True, type=user_id)
@@ -114,13 +126,61 @@ async def checked_channel(discord_api, config, user, bot_id, channel_id):
     return channel
 
 
-async def execute(config, store, action, discord_id=None, *, transport=None):
+async def execute(config, store, action, discord_id=None, *, op_id=None, name="", transport=None):
     if action == "list":
         show_accounts(store)
+        return
+    if action == "dm-list":
+        for link in store.dm_links():
+            print(
+                f"op={link['op_id']} discord={link['discord_id']} "
+                f"enabled={bool(link['enabled'])} name={link['name']} "
+                f"pending={store.dm_pending_count(link['discord_id'])}"
+            )
+        return
+    if action == "dm-errors":
+        for job in store.dm_failures():
+            print(
+                f"op={job['op_id']} discord={job['discord_id']} "
+                f"event={job['event_key']} error={job['error']}"
+            )
+        return
+    if action == "dm-retry":
+        print(f"Queued {store.dm_retry_failed(op_id)} failed DM jobs for OpenProject {op_id}")
+        return
+    if action == "dm-seed":
+        def rows():
+            for line in csv.reader(sys.stdin):
+                if len(line) != 4:
+                    raise AdminError("Expected CSV: work_package_id,assignee_id,status_id,lock_version")
+                work_id, assignee, status, version = line
+                values = (int(work_id), int(assignee) if assignee else None,
+                          int(status), int(version))
+                if values[0] < 1 or values[2] < 1 or values[3] < 0 or (
+                    values[1] is not None and values[1] < 1
+                ):
+                    raise AdminError("Invalid work package snapshot")
+                yield values
+        count = store.dm_seed_states(rows())
+        print(f"Seeded {count} work package snapshots")
+        return
+    if action in ("dm-unlink", "dm-suspend", "dm-resume"):
+        changed = (
+            store.dm_unlink(op_id) if action == "dm-unlink" else
+            store.dm_set_enabled(op_id, action == "dm-resume")
+        )
+        if not changed:
+            raise AdminError("OpenProject ID is not linked")
+        print(f"{action} OpenProject {op_id}")
         return
 
     async with httpx.AsyncClient(trust_env=False, transport=transport) as http:
         discord_api = DiscordAdmin(config, http)
+        if action == "dm-link":
+            await discord_api.member(discord_id)
+            store.dm_link(op_id, str(discord_id), name[:200])
+            print(f"Linked OpenProject {op_id} to Discord {discord_id} for DM")
+            return
         bot_id = await discord_api.bot_id()
         if action == "audit-channels":
             for account in store.list_accounts():
@@ -205,7 +265,12 @@ def main():
         with FileLock(config.db_path + ".lock", timeout=0):
             store = Store(config.db_path, config.encryption_key)
             try:
-                asyncio.run(execute(config, store, arguments.action, arguments.discord_id if hasattr(arguments, "discord_id") else None))
+                asyncio.run(execute(
+                    config, store, arguments.action,
+                    getattr(arguments, "discord_id", None),
+                    op_id=getattr(arguments, "op_id", None),
+                    name=getattr(arguments, "name", ""),
+                ))
             finally:
                 store.close()
     except (AdminError, APIError, ProtocolError, Timeout, sqlite3.Error, ValueError) as error:

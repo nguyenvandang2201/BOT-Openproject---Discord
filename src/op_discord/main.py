@@ -13,6 +13,7 @@ from .openproject import OpenProject
 from .service import Service
 from .store import Store
 from .web import create_app
+from .webhook import WebhookService
 
 
 async def run(config):
@@ -21,7 +22,11 @@ async def run(config):
         async with httpx.AsyncClient(trust_env=False) as http:
             api = OpenProject(config, http)
             bot = BridgeBot(config, store, api)
-            service = Service(config, store, api, bot.send_notification)
+            service = (
+                WebhookService(config, store, bot.send_dm)
+                if config.delivery_mode == "webhook_dm"
+                else Service(config, store, api, bot.send_notification)
+            )
             bot.service = service
 
             async def worker():
@@ -38,6 +43,7 @@ async def run(config):
                     and not worker_task.done()
                     and time.time() - service.last_tick < 300
                 ),
+                webhook_secret=config.webhook_secret if config.delivery_mode == "webhook_dm" else "",
             )
             server = uvicorn.Server(
                 uvicorn.Config(

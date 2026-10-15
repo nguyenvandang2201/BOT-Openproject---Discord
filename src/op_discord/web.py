@@ -4,8 +4,11 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from .webhook import parse_event, valid_signature
+
 log = logging.getLogger(__name__)
 COOKIE = "__Host-opbridge"
+MAX_WEBHOOK_BODY = 1024 * 1024
 
 
 def page(text, status=200):
@@ -18,7 +21,7 @@ def page(text, status=200):
     )
 
 
-def create_app(store, api, ready=lambda: True, *, allow_oauth=False):
+def create_app(store, api, ready=lambda: True, *, allow_oauth=False, webhook_secret=""):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
@@ -46,6 +49,31 @@ def create_app(store, api, ready=lambda: True, *, allow_oauth=False):
     async def readiness():
         ok = ready()
         return JSONResponse({"ready": ok}, status_code=200 if ok else 503)
+
+    @app.post("/webhooks/openproject")
+    async def openproject_webhook(request: Request):
+        if not webhook_secret:
+            return JSONResponse({"error": "disabled"}, status_code=404)
+        if request.headers.get("content-length", "").isdigit() and int(
+            request.headers["content-length"]
+        ) > MAX_WEBHOOK_BODY:
+            return JSONResponse({"error": "payload_too_large"}, status_code=413)
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > MAX_WEBHOOK_BODY:
+                return JSONResponse({"error": "payload_too_large"}, status_code=413)
+            body.extend(chunk)
+        body = bytes(body)
+        if not valid_signature(body, request.headers.get("x-op-signature", ""), webhook_secret):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            event = parse_event(body)
+            if event is None:
+                return JSONResponse({"accepted": True, "queued": 0}, status_code=202)
+            queued = store.accept_webhook(event)
+        except (ValueError, TypeError, KeyError):
+            return JSONResponse({"error": "invalid_payload"}, status_code=400)
+        return JSONResponse({"accepted": True, "queued": queued}, status_code=202)
 
     @app.get("/link")
     async def link(ticket: str = ""):

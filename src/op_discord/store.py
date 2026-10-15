@@ -21,7 +21,7 @@ class Store:
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 1:
+        if version > 2:
             self.db.close()
             raise ValueError("Database was created by a newer bridge version")
         self.db.executescript("""
@@ -64,7 +64,34 @@ class Store:
                 "UPDATE accounts SET status='migration_pending' "
                 "WHERE channel_id IS NULL AND status IN ('active','needs_attention')"
             )
-            self.db.execute("PRAGMA user_version=1")
+            self.db.executescript("""
+                CREATE TABLE IF NOT EXISTS dm_links (
+                    op_id INTEGER PRIMARY KEY, discord_id TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE TABLE IF NOT EXISTS work_package_state (
+                    id INTEGER PRIMARY KEY, assignee_id INTEGER, status_id INTEGER,
+                    lock_version INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS dm_deliveries (
+                    event_key TEXT PRIMARY KEY, op_id INTEGER NOT NULL,
+                    discord_id TEXT NOT NULL,
+                    kind TEXT NOT NULL, work_package_id INTEGER NOT NULL,
+                    subject TEXT NOT NULL, project TEXT NOT NULL,
+                    detail TEXT NOT NULL, actor TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL, error TEXT
+                );
+                CREATE INDEX IF NOT EXISTS dm_due ON dm_deliveries(status,next_attempt);
+            """)
+            if version < 2:
+                # Preserve links from the previous channel deployment once.
+                self.db.execute(
+                    "INSERT OR IGNORE INTO dm_links(op_id,discord_id,name,enabled) "
+                    "SELECT op_id,discord_id,name,1 FROM accounts WHERE status='active'"
+                )
+            self.db.execute("PRAGMA user_version=2")
 
     def close(self):
         self.db.close()
@@ -260,3 +287,126 @@ class Store:
         return self.db.execute(
             "SELECT COUNT(*) FROM deliveries WHERE discord_id=? AND status='pending'", (discord_id,)
         ).fetchone()[0]
+
+    def dm_link(self, op_id, discord_id, name=""):
+        with self.db:
+            self.db.execute(
+                "INSERT INTO dm_links(op_id,discord_id,name,enabled) VALUES(?,?,?,1) "
+                "ON CONFLICT(op_id) DO UPDATE SET discord_id=excluded.discord_id,"
+                "name=excluded.name,enabled=1",
+                (op_id, discord_id, name),
+            )
+
+    def dm_unlink(self, op_id):
+        with self.db:
+            result = self.db.execute("DELETE FROM dm_links WHERE op_id=?", (op_id,))
+        return result.rowcount
+
+    def dm_set_enabled(self, op_id, enabled):
+        with self.db:
+            result = self.db.execute(
+                "UPDATE dm_links SET enabled=? WHERE op_id=?", (int(enabled), op_id)
+            )
+        return result.rowcount
+
+    def dm_links(self):
+        return [dict(r) for r in self.db.execute("SELECT * FROM dm_links ORDER BY op_id")]
+
+    def dm_link_for_discord(self, discord_id):
+        row = self.db.execute(
+            "SELECT * FROM dm_links WHERE discord_id=?", (discord_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def accept_webhook(self, event):
+        """Atomically update the work package snapshot and enqueue recipient jobs."""
+        wp = event["work_package"]
+        wp_id = wp["id"]
+        with self.db:
+            if event["action"] in ("work_package:created", "work_package:updated"):
+                old = self.db.execute(
+                    "SELECT * FROM work_package_state WHERE id=?", (wp_id,)
+                ).fetchone()
+                version = wp["lock_version"]
+                if old and version <= old["lock_version"]:
+                    return 0
+                self.db.execute(
+                    "INSERT INTO work_package_state VALUES(?,?,?,?) "
+                    "ON CONFLICT(id) DO UPDATE SET assignee_id=excluded.assignee_id,"
+                    "status_id=excluded.status_id,lock_version=excluded.lock_version",
+                    (wp_id, wp["assignee_id"], wp["status_id"], version),
+                )
+                kinds = []
+                if wp["assignee_id"] is not None and (
+                    event["action"] == "work_package:created"
+                    or (old is not None and old["assignee_id"] != wp["assignee_id"])
+                ):
+                    kinds.append(("assignment", "Bạn được giao công việc"))
+                if old is not None and old["status_id"] != wp["status_id"]:
+                    kinds.append(("status", wp["status_title"]))
+                event_id = f"wp:{wp_id}:{version}"
+            else:
+                kinds = [("comment", event.get("comment") or "Có bình luận mới")]
+                event_id = f"comment:{event['activity_id']}"
+            if wp["assignee_id"] is None:
+                return 0
+            link = self.db.execute(
+                "SELECT discord_id FROM dm_links WHERE op_id=? AND enabled=1",
+                (wp["assignee_id"],),
+            ).fetchone()
+            if not link:
+                return 0
+            count = 0
+            for kind, detail in kinds:
+                result = self.db.execute(
+                    "INSERT OR IGNORE INTO dm_deliveries "
+                    "(event_key,op_id,discord_id,kind,work_package_id,subject,project,detail,actor,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (f"{event_id}:{kind}", wp["assignee_id"], link["discord_id"], kind, wp_id,
+                     wp["subject"], wp["project"], detail, event["actor"], time.time()),
+                )
+                count += result.rowcount
+            return count
+
+    def dm_jobs(self, limit):
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM dm_deliveries WHERE status='pending' AND next_attempt<=? "
+            "ORDER BY created_at,event_key LIMIT ?", (time.time(), limit)
+        )]
+
+    def dm_finish(self, key, status, error=None, delay=0):
+        with self.db:
+            self.db.execute(
+                "UPDATE dm_deliveries SET status=?,error=?,attempts=attempts+1,next_attempt=? "
+                "WHERE event_key=?", (status, error, time.time() + delay, key)
+            )
+
+    def dm_pending_count(self, discord_id):
+        return self.db.execute(
+            "SELECT COUNT(*) FROM dm_deliveries WHERE discord_id=? AND status='pending'",
+            (discord_id,),
+        ).fetchone()[0]
+
+    def dm_seed_states(self, rows):
+        with self.db:
+            result = self.db.executemany(
+                "INSERT OR IGNORE INTO work_package_state "
+                "(id,assignee_id,status_id,lock_version) VALUES(?,?,?,?)", rows
+            )
+        return result.rowcount
+
+    def dm_failures(self):
+        return [dict(r) for r in self.db.execute(
+            "SELECT event_key,op_id,discord_id,error FROM dm_deliveries "
+            "WHERE status='failed' ORDER BY created_at"
+        )]
+
+    def dm_retry_failed(self, op_id):
+        with self.db:
+            result = self.db.execute(
+                "UPDATE dm_deliveries SET status='pending',error=NULL,next_attempt=0 "
+                "WHERE status='failed' AND op_id=? AND discord_id=("
+                "SELECT discord_id FROM dm_links WHERE op_id=? AND enabled=1)",
+                (op_id, op_id),
+            )
+        return result.rowcount
