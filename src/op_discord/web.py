@@ -4,6 +4,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from .admin_web import register_admin
 from .webhook import parse_event, valid_signature
 
 log = logging.getLogger(__name__)
@@ -21,7 +22,8 @@ def page(text, status=200):
     )
 
 
-def create_app(store, api, ready=lambda: True, *, allow_oauth=False, webhook_secret=""):
+def create_app(store, api, ready=lambda: True, *, allow_oauth=False, webhook_secret="",
+               admin_bot=None, admin_url=""):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
@@ -35,7 +37,12 @@ def create_app(store, api, ready=lambda: True, *, allow_oauth=False, webhook_sec
             {
                 "Cache-Control": "no-store",
                 "Referrer-Policy": "no-referrer",
-                "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+                "Content-Security-Policy": (
+                    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+                    "frame-ancestors 'none'; base-uri 'none'"
+                    if request.url.path.startswith('/admin') else
+                    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+                ),
                 "X-Content-Type-Options": "nosniff",
             }
         )
@@ -131,4 +138,6 @@ def create_app(store, api, ready=lambda: True, *, allow_oauth=False, webhook_sec
         response.delete_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="lax")
         return response
 
+    if admin_bot is not None:
+        register_admin(app, store, admin_bot, admin_url)
     return app

@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import secrets
 import sqlite3
@@ -17,11 +18,12 @@ class Store:
 
     def __init__(self, path: str, key: str):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.cipher_key = key.encode()
         self.cipher = Fernet(key.encode())
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 2:
+        if version > 3:
             self.db.close()
             raise ValueError("Database was created by a newer bridge version")
         self.db.executescript("""
@@ -84,14 +86,28 @@ class Store:
                     created_at REAL NOT NULL, error TEXT
                 );
                 CREATE INDEX IF NOT EXISTS dm_due ON dm_deliveries(status,next_attempt);
+                CREATE TABLE IF NOT EXISTS admin_tickets (
+                    ticket_hash TEXT PRIMARY KEY, discord_id TEXT NOT NULL, expires REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS admin_sessions (
+                    session_hash TEXT PRIMARY KEY, discord_id TEXT NOT NULL, expires REAL NOT NULL
+                );
             """)
+            for table, name, definition in (
+                ("work_package_state", "assignee_name", "TEXT NOT NULL DEFAULT ''"),
+                ("work_package_state", "status_name", "TEXT NOT NULL DEFAULT ''"),
+                ("dm_deliveries", "metadata", "TEXT NOT NULL DEFAULT '{}'"),
+            ):
+                existing = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
+                if name not in existing:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
             if version < 2:
                 # Preserve links from the previous channel deployment once.
                 self.db.execute(
                     "INSERT OR IGNORE INTO dm_links(op_id,discord_id,name,enabled) "
                     "SELECT op_id,discord_id,name,1 FROM accounts WHERE status='active'"
                 )
-            self.db.execute("PRAGMA user_version=2")
+            self.db.execute("PRAGMA user_version=3")
 
     def close(self):
         self.db.close()
@@ -105,6 +121,51 @@ class Store:
     def cleanup(self):
         with self.db:
             self.db.execute("DELETE FROM flows WHERE expires < ?", (time.time(),))
+            self.db.execute("DELETE FROM admin_tickets WHERE expires < ?", (time.time(),))
+            self.db.execute("DELETE FROM admin_sessions WHERE expires < ?", (time.time(),))
+
+    def admin_ticket(self, discord_id):
+        ticket = secrets.token_urlsafe(32)
+        with self.db:
+            self.db.execute("DELETE FROM admin_tickets WHERE discord_id=?", (discord_id,))
+            self.db.execute(
+                "INSERT INTO admin_tickets VALUES(?,?,?)",
+                (digest(ticket), discord_id, time.time() + 300),
+            )
+        return ticket
+
+    def admin_login(self, ticket):
+        if len(ticket) > 128:
+            return None
+        session = secrets.token_urlsafe(32)
+        with self.db:
+            row = self.db.execute(
+                "DELETE FROM admin_tickets WHERE ticket_hash=? AND expires>? RETURNING discord_id",
+                (digest(ticket), time.time()),
+            ).fetchone()
+            if not row:
+                return None
+            self.db.execute(
+                "INSERT INTO admin_sessions VALUES(?,?,?)",
+                (digest(session), row["discord_id"], time.time() + 3600),
+            )
+        return session
+
+    def admin_session(self, session):
+        if not session or len(session) > 128:
+            return None
+        row = self.db.execute(
+            "SELECT discord_id FROM admin_sessions WHERE session_hash=? AND expires>?",
+            (digest(session), time.time()),
+        ).fetchone()
+        return row["discord_id"] if row else None
+
+    def admin_csrf(self, session):
+        return hmac.new(self.cipher_key, session.encode(), hashlib.sha256).hexdigest()
+
+    def admin_logout(self, session):
+        with self.db:
+            self.db.execute("DELETE FROM admin_sessions WHERE session_hash=?", (digest(session),))
 
     def start_flow(self, discord_id: str) -> str:
         self.cleanup()
@@ -288,14 +349,28 @@ class Store:
             "SELECT COUNT(*) FROM deliveries WHERE discord_id=? AND status='pending'", (discord_id,)
         ).fetchone()[0]
 
-    def dm_link(self, op_id, discord_id, name=""):
+    def dm_link(self, op_id, discord_id, name="", *, welcome=True):
         with self.db:
+            old = self.db.execute(
+                "SELECT discord_id FROM dm_links WHERE op_id=?", (op_id,)
+            ).fetchone()
             self.db.execute(
                 "INSERT INTO dm_links(op_id,discord_id,name,enabled) VALUES(?,?,?,1) "
                 "ON CONFLICT(op_id) DO UPDATE SET discord_id=excluded.discord_id,"
                 "name=excluded.name,enabled=1",
                 (op_id, discord_id, name),
             )
+            changed = old is None or old["discord_id"] != discord_id
+            if changed and welcome:
+                self.db.execute(
+                    "INSERT INTO dm_deliveries "
+                    "(event_key,op_id,discord_id,kind,work_package_id,subject,project,"
+                    "detail,actor,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (f"welcome:{op_id}:{secrets.token_hex(12)}", op_id, discord_id,
+                     "welcome", 0, "Chào mừng đến với thông báo OpenProject", "",
+                     name[:200], "", time.time()),
+                )
+        return changed
 
     def dm_unlink(self, op_id):
         with self.db:
@@ -331,10 +406,14 @@ class Store:
                 if old and version <= old["lock_version"]:
                     return 0
                 self.db.execute(
-                    "INSERT INTO work_package_state VALUES(?,?,?,?) "
+                    "INSERT INTO work_package_state "
+                    "(id,assignee_id,status_id,lock_version,assignee_name,status_name) "
+                    "VALUES(?,?,?,?,?,?) "
                     "ON CONFLICT(id) DO UPDATE SET assignee_id=excluded.assignee_id,"
-                    "status_id=excluded.status_id,lock_version=excluded.lock_version",
-                    (wp_id, wp["assignee_id"], wp["status_id"], version),
+                    "status_id=excluded.status_id,lock_version=excluded.lock_version,"
+                    "assignee_name=excluded.assignee_name,status_name=excluded.status_name",
+                    (wp_id, wp["assignee_id"], wp["status_id"], version,
+                     wp.get("assignee_name", ""), wp["status_title"]),
                 )
                 kinds = []
                 if wp["assignee_id"] is not None and (
@@ -358,12 +437,28 @@ class Store:
                 return 0
             count = 0
             for kind, detail in kinds:
+                metadata = {
+                    "status": wp["status_title"],
+                    "priority": wp.get("priority", ""),
+                    "due_date": wp.get("due_date", ""),
+                    "assignee": wp.get("assignee_name", ""),
+                    "reporter": wp.get("reporter", ""),
+                    "previous_assignee": (
+                        old["assignee_name"] or f"ID {old['assignee_id']}"
+                        if old and old["assignee_id"] is not None else ""
+                    ) if event["action"] != "work_package_comment:comment" else "",
+                    "previous_status": (
+                        old["status_name"] or f"ID {old['status_id']}"
+                        if old else ""
+                    ) if event["action"] != "work_package_comment:comment" else "",
+                }
                 result = self.db.execute(
                     "INSERT OR IGNORE INTO dm_deliveries "
-                    "(event_key,op_id,discord_id,kind,work_package_id,subject,project,detail,actor,created_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "(event_key,op_id,discord_id,kind,work_package_id,subject,project,detail,actor,"
+                    "created_at,metadata) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (f"{event_id}:{kind}", wp["assignee_id"], link["discord_id"], kind, wp_id,
-                     wp["subject"], wp["project"], detail, event["actor"], time.time()),
+                     wp["subject"], wp["project"], detail, event["actor"], time.time(),
+                     json.dumps(metadata, ensure_ascii=False)),
                 )
                 count += result.rowcount
             return count

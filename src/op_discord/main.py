@@ -44,6 +44,8 @@ async def run(config):
                     and time.time() - service.last_tick < 300
                 ),
                 webhook_secret=config.webhook_secret if config.delivery_mode == "webhook_dm" else "",
+                admin_bot=bot if config.delivery_mode == "webhook_dm" else None,
+                admin_url=config.admin_url if config.delivery_mode == "webhook_dm" else "",
             )
             server = uvicorn.Server(
                 uvicorn.Config(

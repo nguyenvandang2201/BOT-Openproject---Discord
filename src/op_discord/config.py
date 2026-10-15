@@ -1,3 +1,4 @@
+import ipaddress
 import os
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -22,6 +23,21 @@ def origin(value: str) -> str:
     return value
 
 
+def admin_origin(value: str) -> str:
+    parsed = urlsplit(value)
+    if (not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/")
+            or parsed.query or parsed.fragment or parsed.scheme not in ("http", "https")):
+        raise ValueError("ADMIN_URL must be an HTTP(S) origin")
+    if parsed.scheme == "http":
+        try:
+            private = ipaddress.ip_address(parsed.hostname).is_private
+        except ValueError:
+            private = parsed.hostname == "localhost"
+        if not private:
+            raise ValueError("HTTP ADMIN_URL must use a private IP or localhost")
+    return value.rstrip("/")
+
+
 @dataclass(frozen=True)
 class Config:
     op_url: str
@@ -39,6 +55,7 @@ class Config:
     port: int = 8080
     delivery_mode: str = "channel"
     webhook_secret: str = ""
+    admin_url: str = ""
 
     @property
     def redirect_uri(self) -> str:
@@ -76,6 +93,7 @@ class Config:
             port=int(os.getenv("HTTP_PORT", "8080")),
             delivery_mode=mode,
             webhook_secret=os.getenv("OPENPROJECT_WEBHOOK_SECRET", "").strip(),
+            admin_url=admin_origin(os.environ["ADMIN_URL"]) if os.getenv("ADMIN_URL") else "",
         )
         if (
             result.poll_interval < 15

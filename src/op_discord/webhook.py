@@ -56,14 +56,27 @@ def work_package(value):
     project = links.get("project") or {}
     if not isinstance(project, dict):
         project = {}
+    assignee = links.get("assignee") or {}
+    if not isinstance(assignee, dict):
+        assignee = {}
+    priority = links.get("priority") or {}
+    if not isinstance(priority, dict):
+        priority = {}
+    reporter = links.get("author") or {}
+    if not isinstance(reporter, dict):
+        reporter = {}
     return {
         "id": positive_id(value.get("id")),
         "lock_version": version_id(value.get("lockVersion")),
         "assignee_id": user_link(links.get("assignee")),
+        "assignee_name": short(assignee.get("title"), 100),
         "status_id": positive_id(int(match[1])),
         "status_title": short(status.get("title"), 100) or "Đã đổi trạng thái",
         "subject": short(value.get("subject"), 250) or "Công việc OpenProject",
         "project": short(project.get("title"), 120),
+        "priority": short(priority.get("title"), 100),
+        "due_date": short(value.get("dueDate"), 20),
+        "reporter": short(reporter.get("title"), 100),
     }
 
 

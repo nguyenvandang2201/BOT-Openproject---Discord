@@ -7,7 +7,7 @@ from op_discord.openproject import OpenProject
 async def test_slash_commands_and_minimal_intents(config, store, api):
     async with BridgeBot(config, store, api) as bot:
         group = bot.tree.get_command("op", guild=discord.Object(id=config.guild_id))
-        assert {c.name for c in group.commands} == {"status"}
+        assert {c.name for c in group.commands} == {"status", "admin"}
         assert bot.intents.guilds
         assert not bot.intents.members
         assert not bot.allowed_mentions.everyone

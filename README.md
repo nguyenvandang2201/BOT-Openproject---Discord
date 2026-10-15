@@ -10,7 +10,7 @@ Bot nhận webhook OpenProject và gửi DM cho người được giao công vi�
 | Đổi trạng thái công việc | Người đang được giao | Trạng thái mới và liên kết |
 | Bình luận công khai mới | Người đang được giao | Tối đa 300 ký tự đầu và liên kết |
 
-Bot bỏ qua bình luận nội bộ. Một webhook cập nhật có thể tạo cả thông báo giao việc lẫn đổi trạng thái. `/op status` trong Discord server trả lời riêng trạng thái liên kết và số DM đang chờ. DM được gửi từ bot vào hộp thư Discord; không tạo channel cho mỗi người.
+Bot bỏ qua bình luận nội bộ. Một webhook cập nhật có thể tạo cả thông báo giao việc lẫn đổi trạng thái. `/op status` trong Discord server trả lời riêng trạng thái liên kết và số DM đang chờ. DM được gửi từ bot vào hộp thư Discord; không tạo channel cho mỗi người. DM dùng thẻ thông tin có tiêu đề, trạng thái, ưu tiên, hạn, dự án, người được giao, người báo cáo và nút mở công việc. Thuộc tính nào OpenProject không cung cấp sẽ hiện dấu gạch ngang. Khi quản lý liên kết người dùng mới, bot gửi một DM chào mừng.
 
 OpenProject gửi ảnh chụp công việc ở thời điểm xử lý webhook, không gửi danh sách thuộc tính vừa thay đổi. Vì vậy lần cập nhật đầu tiên của **công việc cũ chưa có snapshot** chỉ lưu trạng thái làm mốc, không suy đoán sai rằng vừa có giao việc/đổi trạng thái. Các lần sau được so sánh với mốc. Công việc mới có thể gửi giao việc ngay. Bình luận dùng thông tin công việc nhúng trong chính webhook.
 
@@ -26,6 +26,7 @@ DELIVERY_MODE=webhook_dm
 OPENPROJECT_WEBHOOK_SECRET=... # ít nhất 32 ký tự ngẫu nhiên
 BRIDGE_BIND_ADDRESS=192.168.1.12
 BRIDGE_PUBLISHED_PORT=8081
+ADMIN_URL=http://192.168.1.12:8081
 ```
 
 `DISCORD_CATEGORY_ID` không cần cho DM. Secret webhook phải giống hệt secret cấu hình trong OpenProject. Tạo secret bằng `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Giữ kín `.env`; không đưa secret vào URL hoặc Git.
@@ -45,7 +46,15 @@ curl -f http://127.0.0.1:8081/readyz
 
 Trên VPS đang dùng `192.168.1.12:8081`, thay địa chỉ `curl` cho đúng listener. `/healthz` kiểm tra HTTP, `/readyz` chỉ thành công khi bot Discord và worker sẵn sàng. `DELIVERY_MODE=webhook_dm` tắt hẳn worker polling/channel cũ. Không dùng `docker compose down -v` vì sẽ xóa database.
 
-## Quản lý liên kết
+## Trang quản lý liên kết trong mạng nội bộ
+
+Người quản lý cần quyền **Manage Server** trong Discord server. Từ máy tính nằm trong mạng nội bộ, chạy `/op admin` trong server; bot trả lời riêng một liên kết đăng nhập có hiệu lực 5 phút và chỉ dùng một lần. Mở liên kết đó trên cùng máy nội bộ để vào trang quản lý. Phiên đăng nhập hết hạn sau 1 giờ; quyền Manage Server được kiểm tra lại khi mở trang và gửi mỗi biểu mẫu.
+
+Trong trang quản lý, nhập **OpenProject user ID** và **Discord user ID**, thêm tên để dễ nhận biết rồi bấm **Lưu liên kết**. Bot xác nhận Discord ID đang là thành viên server. Liên kết mới được xếp hàng gửi DM chào mừng; người dùng không cần thao tác gì. Trang cũng cho phép xem số DM chờ, tạm dừng/bật lại, gỡ liên kết và đưa DM lỗi trở lại hàng đợi. Nếu người dùng chặn DM, hãy xử lý cài đặt Discord rồi bấm **Gửi lại lỗi**. Cần xác nhận OpenProject user ID đúng với người đó trước khi lưu vì trang không có quyền đọc danh sách người dùng OpenProject.
+
+`ADMIN_URL` phải là URL nội bộ trỏ đến listener của bridge; URL này cũng được dùng để giới hạn Host được phép truy cập `/admin`. Nếu cần cho quản lý truy cập ngoài LAN, hãy dùng VPN vào LAN. Không thêm đường dẫn `/admin` vào tunnel hoặc reverse proxy công khai. Nếu bot đã chạy trước khi thêm biến này, hãy build và khởi động lại bridge để lệnh `/op admin` xuất hiện.
+
+## Lệnh quản trị dự phòng
 
 Các lệnh `op-discord-admin` dùng cùng `.env` và volume database. Dừng bridge trước khi chạy vì CLI dùng khóa độc quyền:
 
