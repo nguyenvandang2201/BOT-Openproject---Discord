@@ -2,10 +2,11 @@ import asyncio
 import hashlib
 import hmac
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
+from op_discord.bot import BridgeBot
 from op_discord.service import DeliveryError
 from op_discord.web import create_app
 from op_discord.webhook import WebhookService
@@ -148,3 +149,22 @@ async def test_dm_worker_retries_transient_failures(store, config):
     assert sender.await_count == 1
     row = store.db.execute("SELECT status,attempts FROM dm_deliveries").fetchone()
     assert tuple(row) == ("pending", 1)
+
+
+async def test_discord_dm_uses_member_and_escapes_mentions(config, store, api):
+    member = AsyncMock()
+    guild = AsyncMock()
+    guild.fetch_member.return_value = member
+    job = {
+        "discord_id": "100", "kind": "comment", "subject": "@everyone Fix login",
+        "work_package_id": 42, "project": "Example", "detail": "@here Please check",
+        "actor": "Bob",
+    }
+    async with BridgeBot(config, store, api) as bot:
+        with patch.object(bot, "get_guild", return_value=guild):
+            await bot.send_dm(job)
+    member.send.assert_awaited_once()
+    embed = member.send.await_args.kwargs["embed"]
+    assert "@everyone" not in embed.title
+    assert "@here" not in embed.fields[1].value
+    assert embed.url == "https://op.example/work_packages/42"
