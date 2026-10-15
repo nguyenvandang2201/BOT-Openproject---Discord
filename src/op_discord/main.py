@@ -23,7 +23,7 @@ async def run(config):
             api = OpenProject(config, http)
             bot = BridgeBot(config, store, api)
             service = (
-                WebhookService(config, store, bot.send_dm)
+                WebhookService(config, store, bot.send_dm, api)
                 if config.delivery_mode == "webhook_dm"
                 else Service(config, store, api, bot.send_notification)
             )
@@ -46,6 +46,7 @@ async def run(config):
                 webhook_secret=config.webhook_secret if config.delivery_mode == "webhook_dm" else "",
                 admin_bot=bot if config.delivery_mode == "webhook_dm" else None,
                 admin_url=config.admin_url if config.delivery_mode == "webhook_dm" else "",
+                multi_recipient_enabled=config.multi_recipient_enabled,
             )
             server = uvicorn.Server(
                 uvicorn.Config(

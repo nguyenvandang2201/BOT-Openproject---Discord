@@ -10,6 +10,12 @@ from op_discord.web import create_app
 def setup(store, api):
     bot = AsyncMock()
     bot.is_manager.return_value = True
+    bot.member_summary.side_effect = lambda discord_id: {
+        "id": discord_id, "name": f"Member {discord_id}"
+    }
+    api.service_user.side_effect = lambda op_id: {
+        "id": op_id, "name": f"User {op_id}", "status": "active"
+    }
     app = create_app(store, api, admin_bot=bot, admin_url="http://192.168.1.12:8081")
     return app, bot
 
@@ -90,3 +96,18 @@ async def test_admin_rejects_invalid_member_and_expired_ticket(store, api):
                                                               "discord_id": "456"})
         assert response.status_code == 400
         assert store.dm_links() == []
+
+
+async def test_single_manual_link_remains_available_without_service_user_read(store, api):
+    app, _ = setup(store, api)
+    api.service_user.side_effect = AssertionError("service user lookup must be optional")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://192.168.1.12:8081") as client:
+        await client.get(f"/admin/login?ticket={store.admin_ticket('123')}")
+        csrf = store.admin_csrf(client.cookies.get(COOKIE))
+        response = await client.post("/admin/action", data={
+            "csrf": csrf, "action": "link", "op_id": "12", "discord_id": "456",
+        })
+        assert response.status_code == 303
+        assert store.dm_links()[0]["op_id"] == 12
+        api.service_user.assert_not_awaited()

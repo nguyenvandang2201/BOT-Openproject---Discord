@@ -23,7 +23,7 @@ def page(text, status=200):
 
 
 def create_app(store, api, ready=lambda: True, *, allow_oauth=False, webhook_secret="",
-               admin_bot=None, admin_url=""):
+               admin_bot=None, admin_url="", multi_recipient_enabled=False):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
@@ -77,7 +77,8 @@ def create_app(store, api, ready=lambda: True, *, allow_oauth=False, webhook_sec
             event = parse_event(body)
             if event is None:
                 return JSONResponse({"accepted": True, "queued": 0}, status_code=202)
-            queued = store.accept_webhook(event)
+            queued = (store.enqueue_event(event) if multi_recipient_enabled
+                      else store.accept_webhook(event))
         except (ValueError, TypeError, KeyError):
             return JSONResponse({"error": "invalid_payload"}, status_code=400)
         return JSONResponse({"accepted": True, "queued": queued}, status_code=202)
@@ -139,5 +140,5 @@ def create_app(store, api, ready=lambda: True, *, allow_oauth=False, webhook_sec
         return response
 
     if admin_bot is not None:
-        register_admin(app, store, admin_bot, admin_url)
+        register_admin(app, store, admin_bot, api, admin_url)
     return app
