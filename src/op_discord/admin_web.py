@@ -2,6 +2,7 @@
 
 import hmac
 import html
+import ipaddress
 import logging
 import re
 import sqlite3
@@ -83,7 +84,18 @@ def register_admin(app, store, bot, admin_url):
     secure = origin.scheme == "https"
 
     def on_lan_host(request):
-        return request.headers.get("host", "").lower() == expected_host
+        if request.headers.get("host", "").lower() != expected_host:
+            return False
+        # The page is opened directly on the LAN; public reverse proxies add these headers.
+        if any(header in request.headers for header in (
+            "forwarded", "x-forwarded-for", "x-real-ip", "cf-connecting-ip"
+        )):
+            return False
+        try:
+            address = ipaddress.ip_address(request.client.host)
+        except (ValueError, AttributeError):
+            return False
+        return address.is_private or address.is_loopback
 
     async def authorized(request):
         session = request.cookies.get(COOKIE, "")

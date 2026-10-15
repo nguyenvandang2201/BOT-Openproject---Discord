@@ -22,6 +22,9 @@ async def test_admin_ticket_single_use_and_manager_recheck(store, api):
         assert (await client.get("/admin")).status_code == 401
         wrong_host = await client.get(f"/admin/login?ticket={ticket}", headers={"Host": "public.example"})
         assert wrong_host.status_code == 404
+        forwarded = await client.get(f"/admin/login?ticket={ticket}",
+                                     headers={"X-Forwarded-For": "8.8.8.8"})
+        assert forwarded.status_code == 404
         result = await client.get(f"/admin/login?ticket={ticket}", follow_redirects=False)
         assert result.status_code == 303
         assert "httponly" in result.headers["set-cookie"].lower()
@@ -30,6 +33,9 @@ async def test_admin_ticket_single_use_and_manager_recheck(store, api):
         assert (await client.get("/admin")).status_code == 200
         bot.is_manager.return_value = False
         assert (await client.get("/admin")).status_code == 401
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("8.8.8.8", 123)),
+                                 base_url="http://192.168.1.12:8081") as external:
+        assert (await external.get("/admin")).status_code == 404
 
 
 async def test_admin_links_welcome_csrf_actions_and_logout(store, api):
